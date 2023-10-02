@@ -1,0 +1,396 @@
+---
+title: "RegLab Home Assignment"
+output: html_document
+date: "2023-03-25"
+---
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Part I 
+
+Loading data + preprocessing. Add the cuisine variable to the dataset (step 2). 
+
+```{r}
+setwd("/Users/asya/Dropbox/_ jobs/RegLab")
+
+library(tidyverse)
+
+cuisines_df <- read.csv("cuisines.csv")
+food_violations <- read.csv("food_violations_seattle.csv") %>% 
+  # change strings to the R data type (two variables)
+  mutate_at(vars(starts_with('inspection_period_')), ~ as.Date(.x))
+
+nrow(food_violations)
+
+### add the cuisine variable
+
+food_violations <- food_violations %>% 
+  # delete unnecessary symbols 
+  mutate(cuisines = str_replace_all(cuisines, '\'|\\[|\\]', '') %>%        
+  # leverage the dplyr functionality to create a list variable: 
+           str_split(', ')) %>%  
+  # create the long version of the data: 
+  unnest(cuisines) %>%  
+  # match the dataset with the cuisine variable: 
+  left_join(., cuisines_df %>% 
+              rename(cuisines = x), by = c('cuisines')) %>%   
+  # for the rest of the dataset:
+  group_by_at(vars(-cuisines, -asian, -ethnic)) %>%   
+  # convert the dataset back to the wide format,
+  # the restaurant is recorded as Asian if at least one attribute of its cuisine var is Asian
+  # same for Ethnic 
+  summarise(cuisines = list(cuisines),     
+            asian = ifelse(sum(asian) > 0, 1, 0),     
+            ethnic = ifelse(sum(ethnic) > 0, 1, 0))
+
+nrow(food_violations)
+```
+
+Step 1. The spread of violation scores and exploratory data analysis. 
+
+Using the method of your choice, analyze the spread of violation scores among
+restaurants. Feel free to demonstrate any additional exploratory data analysis you feel is
+helpful for your understanding.
+
+
+```{r}
+# timeline: reviews from July 2005 to Feb 2013
+summary(food_violations$inspection_period_start_date)
+summary(food_violations$inspection_period_end_date)
+
+
+# distribution of inspection_penalty_score 
+food_violations %>% 
+  ggplot() +
+  geom_histogram(aes(x = inspection_penalty_score), bins = 30, fill = "darkorchid4") +
+  labs(title = "Distribution of Inspection Penalty Scores",
+       x = "Penalty Score", 
+       y = "Frequency")
+```
+
+
+A lot of restaurants received a low penalty score, but we still have plenty of observations with high scores. Let's explore it, especially restaurants with 'severe' violation penalty scores (10 and more). 
+
+
+```{r}
+# add a severe violation column
+food_violations <- food_violations %>% 
+  mutate(severe_violation = ifelse(inspection_penalty_score >= 10, 1, 0))
+
+# create a cuisine type dataset for each restaurant
+food_violations_by_cuisine <- food_violations %>% 
+  group_by(restaurant_id) %>% # for each restaurant 
+  summarise(n_severe_violations = sum(severe_violation),
+            # preserve the asian and ethnic columns
+            asian = mean(asian),
+            ethnic = mean(ethnic)) %>%
+  mutate(rest_type = paste0(ifelse(ethnic == 1, 'Ethnic', 'Non-Ethnic'), ', ', 
+                            ifelse(asian == 1, 'Asian', 'Non-Asian')))
+
+# number of restaurants == 1756: 
+nrow(food_violations_by_cuisine)
+
+
+
+# visualize the number of restaurants by severe violations and ethnic / asian group
+food_violations_by_cuisine %>%
+  ggplot() + 
+  geom_histogram(aes(x = n_severe_violations, fill = rest_type), 
+                 bins = 30, position = "stack") + 
+  labs(y = "number of restaurants", 
+       x = "number of severe violations per restaurant", 
+       fill = "Type of Restaurant")
+```
+
+Note that we don't have restaurants that are Asian but not Ethnic (just as expected). We see that the majority of severe violations are among non-ethnic restaurants, and asian restaurants get the most severe violations among ehtnic restaurants. But that can be due to bias in the data (e.g. inspectors tend to visit Asian restaurants more frequently than other ethnic restaurants). We need to put this data in perspective, and see what is the number of inspections per restaurant. 
+
+```{r}
+food_violations %>% 
+  group_by(restaurant_id) %>% # for each restaurant 
+  summarise(n_inspections = n(),
+            # preserve the asian and ethnic columns
+            asian = mean(asian),
+            ethnic = mean(ethnic)) %>%
+  mutate(rest_type = paste0(ifelse(ethnic == 1, 'Ethnic', 'Non-Ethnic'), ', ', 
+                            ifelse(asian == 1, 'Asian', 'Non-Asian'))) %>%
+  group_by(rest_type) %>% 
+  summarise(mean_n_inspections = mean(n_inspections),
+           sd_ = sd(n_inspections),
+           n_ = n()
+            ) %>%
+  mutate( CI_n_inspections_l= mean_n_inspections - qnorm(0.975)*sqrt(sd_/n_),
+            CI_n_inspections_u = mean_n_inspections + qnorm(0.975)*sqrt(sd_/n_)) %>%
+  select(-sd_, -n_) %>%
+  #pivot_longer(., cols = c(-rest_type)) %>%
+  ggplot() +
+  geom_point(aes(x = rest_type, y = mean_n_inspections)) +
+  geom_errorbar(aes(x = rest_type, ymax = CI_n_inspections_u,
+                    ymin = CI_n_inspections_l), width = .5) + 
+  labs(x = " ", y = "average num of inspections")
+
+```
+
+We see that the average number of inspections is statistically different for each group at the 95\% confidence level, and the ethnic places get inspected more frequently. 
+
+
+We can also explore the link between reviews and violations for restaurants. 
+
+```{r}
+food_violations %>% 
+  group_by(restaurant_id) %>%  # for each restaurant 
+  summarise(average_review_rating = mean(average_review_rating),  # preserve the score
+            # mean inspection score per restaurant 
+            inspection_penalty_score = mean(inspection_penalty_score), 
+            # preserve the asian and ethnic columns
+            asian = mean(asian),
+            ethnic = mean(ethnic)) %>%
+  mutate(rest_type = paste0(ifelse(ethnic == 1, 'Ethnic', 'Non-Ethnic'), ', ', 
+                            ifelse(asian == 1, 'Asian', 'Non-Asian'))) %>%
+    ggplot() +
+    geom_point(aes(x = average_review_rating, 
+                   y = inspection_penalty_score, 
+                   color = rest_type),
+               alpha = .6) + 
+  labs(x = "average review rating",
+       y = "inspection penalty score",
+       color = "restaurant type")
+  
+```
+
+We can see that the inspection decision is biased. The distribution of review ratings is similar-ish across cuisine groups with an average approximately slightly less than 4. 
+
+
+What about the relationship between previous and current penalty scores? Is it different across different cuisine groups? The more frequent inspections of ethnic restaurants that we observed may drive ethnic restaurants to enhance their performance and get better inspection scores under such scrutiny and out of concern for potential closure. 
+
+```{r}
+food_violations %>% 
+  group_by(restaurant_id) %>% 
+  # get mean penalty scores (most recent and previous) for each restaurant 
+  summarise(inspection_prev_penalty_score = mean(inspection_prev_penalty_score),
+            inspection_penalty_score = mean(inspection_penalty_score),
+            asian = mean(asian),
+            ethnic = mean(ethnic))  %>%
+  mutate(rest_type = paste0(ifelse(ethnic == 1, 'Ethnic', 'Non-Ethnic'), ', ', 
+                            ifelse(asian == 1, 'Asian', 'Non-Asian'))) %>%
+  ggplot() + 
+  geom_point(aes(y = inspection_penalty_score, 
+      x = inspection_prev_penalty_score, color = rest_type), alpha = 0.3) + 
+  geom_abline(intercept = 0, slope = 1, color = 'red') +
+  coord_equal()
+```
+
+We see that penalty scores tend to slightly improve over time (more observations are concentrated above the perfect correlation line). We see that the variation for the relationship between current and previous penalty scores is much higher for ethnic restaurants.  
+
+Now, let's think of the same problem form the perspective of scores improvement. Does the penalty improvement score distribution look different across cuisine groups? 
+
+```{r}
+food_violations %>% 
+  mutate( # create a penalty improvement variable 
+    after_penalty_improvement = inspection_penalty_score - inspection_prev_penalty_score
+  ) %>%
+  group_by(restaurant_id) %>% 
+  # preserve the three variables by calculating its means for each restaurant
+  summarise_at(vars(after_penalty_improvement, asian, ethnic), mean) %>%
+  mutate(rest_type = paste0(ifelse(ethnic == 1, 'Ethnic', 'Non-Ethnic'), ', ', 
+                            ifelse(asian == 1, 'Asian', 'Non-Asian'))) %>%
+  ggplot() + 
+  # dist of penalty improvement for each rest type
+  geom_histogram(aes(x = after_penalty_improvement, fill = rest_type), 
+                 bins = 30, position = "stack", boundary=0) + 
+  geom_vline(xintercept = 0, 
+             linetype = 2) +
+  labs(y = "number of restaurants", 
+       x = "penalty improvement score", 
+       fill = "Type of Restaurant",
+       title = "Distribution of Penalty Improvement Scores, Restaurant-level")
+```
+
+
+```{r}
+food_violations %>% 
+  mutate( # create a penalty improvement variable 
+    after_penalty_improvement = inspection_penalty_score - inspection_prev_penalty_score
+  ) %>%
+  group_by(restaurant_id) %>% 
+  # preserve the three variables by calculating its means for each restaurant
+  summarise_at(vars(after_penalty_improvement, asian, ethnic), mean) %>%
+  mutate(rest_type = paste0(ifelse(ethnic == 1, 'Ethnic', 'Non-Ethnic'), ', ', 
+                            ifelse(asian == 1, 'Asian', 'Non-Asian'))) %>%
+  ggplot() + 
+  # density plot of penalty improvement for each rest type
+  geom_density(aes(x = after_penalty_improvement, fill = rest_type), alpha = 0.5) + 
+  geom_vline(xintercept = 0, linetype = 2) +
+  labs(y = "density", 
+       x = "penalty improvement score", 
+       fill = "Type of Restaurant",
+       title = "Distribution of Penalty Improvement Scores, Restaurant-level") 
+```
+
+The density graph clearly show that the improvement score for non-ethnic restaurants hovers around zero. One possible explanation is that these restaurants lack incentives to get better inspection scores (they're not inspected that often and get better scores on average in comparison to ethnic restaurants). 
+
+We can also inspect the relationship between penalty previous and current scores within cuisine groups by estimating a bunch of simple linear models with interaction terms. 
+
+```{r}
+# + commit changes to the dataset (save the 'rest_type' var I've been using frequently)
+food_violations <- food_violations %>% 
+  mutate(cuisine_type_joint = paste0(ifelse(ethnic == 1, 'Ethnic', 'Non-Ethnic'), ', ', 
+                            ifelse(asian == 1, 'Asian', 'Non-Asian')))
+
+# i.e. add the rest_type (cuisine type) var into the dataset
+food_violations <- food_violations %>% 
+  mutate(cuisine_type_joint = factor(cuisine_type_joint))
+
+######
+m1 <- lm(inspection_penalty_score ~ inspection_prev_penalty_score, data = food_violations)
+m2 <- lm(inspection_penalty_score ~ inspection_prev_penalty_score * cuisine_type_joint, data = food_violations)
+
+
+summary(food_violations$inspection_penalty_score)
+summary(food_violations$inspection_prev_penalty_score)
+
+summary(m1) 
+summary(m2)
+```
+
+The model with the interaction term indicates that the pooled effect of previous penalty score on current penalty score is weak and not significant -- the first model thus captures the significant relationship between previous and current penalty scores for a specific cuisine group. We also should note that non-ethic non-asian restaurants have a statistically significantly lower intercept, compared to the reference level (Ethnic, Asian), i.e. the predicted mean penalty score is 53 higher for Asian restaurants than non-ethnic restaurants. Meanwhile, the intercept difference between within ethnic restaurants is not statistically significant. 
+
+The effect of previous penalty score on current penalty score is statistically different between non-ethnic and Asian restaurants, whereas there is no statistical difference between previous and current penalty scores withing the ethnic cuisine group. 
+
+Let's change the reference level to `Non-Ethnic, Non-Asian` to compare Ethnic restaurant with non-Ethnic. 
+```{r}
+# create contrast matrix
+contrasts(food_violations$cuisine_type_joint) <- 
+  contr.treatment(3, base = 3)
+
+# non-ethnic as the reference group
+m3 <- lm(inspection_penalty_score ~ inspection_prev_penalty_score * relevel(cuisine_type_joint, ref = 2), 
+                  data = food_violations)
+
+summary(m3)
+```
+
+We see that both types of ethnic restaurants have a statistically different relationship between prior and current penalty scores in comparison to non-ethnic restaurants. The effects of previous penalty scores on current ones are expected to be about 0.23-0.25 lower for ethnic restaurants compared to non-ethnic, however, given the domain of the penalty score variable (from -1 to 124), the magnitude of the effect is too low, hence we might've observed spurious correlation. 
+
+Do restaurants with higher reviews have less incentives to strike for higher inspection scores? Maybe better reviews disincentivize restaurants from trying to score better? 
+
+```{r}
+food_violations %>% 
+  mutate(
+    after_penalty_improvement = inspection_penalty_score - inspection_prev_penalty_score
+  ) %>%
+  group_by(restaurant_id) %>% 
+  summarise_at(vars(after_penalty_improvement, asian, ethnic, average_review_rating), mean) %>%
+  mutate(rest_type = paste0(ifelse(ethnic == 1, 'Ethnic', 'Non-Ethnic'), ', ', 
+                            ifelse(asian == 1, 'Asian', 'Non-Asian'))) %>%
+  #mutate(after_penalty_improvement = sign(after_penalty_improvement) * 
+  #         log(abs(after_penalty_improvement))) %>%
+  ggplot() + 
+  geom_point(aes(x = average_review_rating, y = after_penalty_improvement, color = rest_type),
+             alpha = 0.2) +
+  geom_hline(yintercept = 0, linetype = 2) +
+  geom_smooth(aes(x = average_review_rating, y= after_penalty_improvement, group = rest_type,
+                  color = rest_type),
+              method = 'lm', se = F) +
+  labs(y = "average improvement since the last inspection", 
+       x = "reviews", 
+       fill = "Type of Restaurant") + theme_bw()
+  
+```
+No such correlation for non-ethnic restaurants, but there is some minor correlation between reviews and improvement scores for ethnic restaurants. 
+
+
+## Part II
+
+Split the dataset into train and test subsets. Unit of analysis = inspection. 
+
+
+```{r}
+set.seed(123)
+
+# use 70% of dataset (randomly) as training set and 30% as test set 
+
+train_ids <- sample(1:nrow(food_violations), ceiling(0.7*nrow(food_violations)))
+test_ids <- setdiff(1:nrow(food_violations), train_ids)
+
+train_df <- food_violations[train_ids,]
+test_df <- food_violations[test_ids,]
+```
+
+
+Given the dependent variable's type (binary), the baseline model should be a logistic regression of cuisine types on violations with restaurant fixed effects. 
+
+We're building a predictive model with a binary outcome = logit with the cuisine type as the main independent variable sounds like the baseline scenario. 
+
+To improve the model, we could consider adding additional features such as average review rating, past violation history. We could also collect more data on factors that may affect food safety, such as employee training and food sourcing practices. 
+
+We can also add naive controls later on, besides the existing data, if we cluster the analysis by precincts. We can take controls like demographic variables or distance to precincts, or precinct fixed effects. Clustering the analysis by precincts can also help to control for unobserved heterogeneity across different precincts that may influence the likelihood of serious violations. 
+
+Moreover, regularization can further improve the predictive power of the model by reducing overfitting and improving generalization performance.
+
+
+```{r}
+logit0 <- glm(severe_violation ~ asian + ethnic, 
+              data = train_df, family = binomial(link = "logit"))
+
+# add review ratings and num of reviews aka likability and popularity
+logit1 <- glm(severe_violation ~ asian + ethnic + average_review_rating + review_count, 
+              data = train_df, family = binomial(link = "logit"))
+
+# add previous penalty scores
+logit2 <- glm(severe_violation ~ asian + ethnic + average_review_rating + review_count
+              + inspection_prev_penalty_score, 
+              data = train_df, family = binomial(link = "logit"))
+
+test_summaries <- lapply(1:3, function(x)
+  summary(list(logit0, logit1, logit2)[[x]])$coefficients[,1:2] %>%
+    data.frame() %>%
+    mutate(
+      predictor = c('Intercept', 'asian', 'ethnic', 'average_review_rating', 'review_count', 
+  'inspection_prev_penalty_score')[row_number()],
+  model = paste0(x)
+    )
+  )
+
+do.call(rbind, test_summaries) %>%
+  filter(predictor != 'Intercept') %>%
+  mutate(
+    CIl = Estimate - qnorm(0.975)*`Std..Error`,
+    CIu = Estimate + qnorm(0.975)*`Std..Error`
+  ) %>%
+  ggplot() +
+  geom_point(aes(x = predictor, y = Estimate, color = model),
+             position=position_dodge(width=0.2)) +
+  geom_errorbar(aes(x = predictor, ymax = CIu,
+                    ymin = CIl,
+                    group = model, color = model), width = .5,
+                position=position_dodge(width=0.2))
+```
+
+```{r}
+test_predictions <- 
+  lapply(list(logit0, logit1, logit2), function(x)
+    predict(x, newdata = test_df, type = 'response'))
+
+predicted_df <- 
+  do.call(cbind, test_predictions) %>%
+  data.frame() %>%
+  mutate(
+    X1_pred = 1*(X1 > 0.5),
+    X2_pred = 1*(X2 > 0.5),
+    X3_pred = 1*(X3 > 0.5),
+    true_y = test_df$severe_violation
+  )
+
+predicted_df %>%
+  select(X1_pred, X2_pred, X3_pred, true_y) %>%
+  pivot_longer(cols = c(-true_y)) %>%
+  mutate(check = 1*(true_y == value)) %>%
+  group_by(name) %>%
+  summarise(accuracy = mean(check))
+
+```
+
+
+

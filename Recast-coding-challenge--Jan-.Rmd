@@ -1,0 +1,369 @@
+---
+title: "Recast coding challenge (Jan)"
+output: html_document
+date: "2023-01-05"
+---
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Loading datasets + preprocessing.
+
+```{r}
+setwd("/Users/asya/Dropbox/_ jobs/Recast Marketing Data Analyst R Exercises")
+
+library(dplyr)
+library(tidyr)
+
+acme_spend <- read.csv("acme_spend.csv") %>%
+  mutate(date = as.Date(date, '%m/%d/%y')) # change the string to R data 
+acme_revenue <- read.csv("acme_revenue.csv") %>%
+  mutate(date = as.Date(date, '%m/%d/%y')) # change the string to R data 
+```
+
+
+
+## Part II 
+
+Create a wide dataset, where each row has a unique date. 
+
+For 'acme_spend': each row has observations for a unique date, each column contains spend values for each unique channel. 
+
+For 'acme_revenue': no permutations needed; each row has observations for a unique date, each column contains revenue values for each unique revenue source. 
+
+```{r}
+# spend permutation, make a wide version of the dataset
+acme_spend_wide <- acme_spend %>% select(-X) %>% 
+  pivot_wider(id_cols = date, names_from = channel, 
+              values_from = spend, names_prefix='channel_', # add a name prefix for readability
+              values_fill = NA) 
+
+acme_revenue <- acme_revenue %>% select(-X)
+
+# merge datasets
+final <- acme_spend_wide %>% 
+  full_join(., acme_revenue, by = 'date') # gives a union of two sets, 
+                                          # which is convenient given that 
+                                          # we don't know which dataset is larger 
+
+
+write.csv(final, "/Users/asya/Dropbox/_ jobs/Recast Marketing Data Analyst R Exercises/Final_Data.csv", row.names=FALSE)
+```
+
+
+## Part I 
+
+Instead of regular experessions, I work with the R date object. 
+
+**a. Which channel had the most spend in 2022?** 
+
+```{r}
+acme_spend %>%
+  filter(format(as.Date(date, '%m/%d/%y'), '%Y') == '2022') %>%
+  group_by(channel) %>%
+  summarise(spend = sum(spend, na.rm=T)) %>% # sum spend for each channel in 2022
+  arrange(-spend) # sort from highest to lowest values
+
+
+acme_spend %>%
+  filter(format(as.Date(date, '%m/%d/%y'), '%Y') == '2022') %>%
+  group_by(channel) %>%
+  summarise(spend = sum(spend, na.rm=T)) %>%
+  arrange(-spend) %>% 
+  .[1,1] %>% unlist() # alternatively, we can print the name of the channel only 
+```
+
+
+**b. Which channel had the largest increase in spend so far in 2022 compared to the same date range in 2021?**
+
+```{r}
+acme_spend %>% filter(format(date, '%Y') == '2022') %>% summarise(min = min(date), max = max(date))
+
+# get the last day for 2022 observations
+last_day <- acme_spend %>% filter(format(date, '%Y') == '2022') %>% summarise(max = max(date)) %>% .[[1]]
+
+
+# create a wide dataset 
+acme_spend_21_22 <- acme_spend %>%
+  # subset the orinigal dataset to leave only certain dates 
+  # the dates for 2021 are in between Jan 1 and the month and the day of 'last_day'
+  filter((date >= '2021-01-01' & date <= paste('2021', format(last_day, '%m'), format(last_day, '%d'), sep='-')) |
+           (date >= '2022-01-01' & date <= last_day)) %>% # and the dates for 2022 are in between Jan 1 and last_day
+  mutate(year = format(date, '%Y')) %>% # add a year var to group by it
+  group_by(year, channel) %>%
+  summarise(spend = sum(spend, na.rm=T)) %>% # sum spend for each channel within each year
+  # create a wide dataframe, so it's easier to calculate the 2021-22 difference
+  pivot_wider(id_cols = channel, 
+              names_from = year, 
+              names_prefix = 'spend_', 
+              values_from = spend) %>%
+  mutate(difference = spend_2022 - spend_2021) %>% 
+  arrange(-difference) # sort from highest to lowest difference
+
+acme_spend_21_22
+acme_spend_21_22[1,'channel'] 
+```
+**c. Did Acme spend more with Google or Facebook in 2022? How has this changed since 2021?**
+
+Although the question does not ask to compare 2021 and 2022 for the same date range, it would make better sense to compare similar groups. I already did a comparison of 2021 amd 2022 on their all observations, I will focus here on comparing for the Jan 1 - Oct 31 time period. 
+
+```{r}
+library(stringr) # connected with tidyr, another way to deal w reg exps
+library(ggplot2)
+
+acme_spend_21_22_gfb <- acme_spend_21_22 %>%
+  # create a new column that specifies whether the channel is fb or google
+  mutate(source = str_extract(channel, '^facebook|^google')) %>% 
+  filter(!is.na(source)) %>% # drop ROWS that aren't fb or google (typo)
+  group_by(source) %>%
+  summarise_at(vars(starts_with('spend_')), ~sum(.x))
+
+# summarise_at := choose all variables that satisfy the condition in vars()
+# vars() := condition environment for tidyverse, summarise_at, filter 
+# condition: columns with "spend_" only 
+# if one column only, we'd out just sum()
+# since we have a bunch of columns, we use tilde and dot
+# tilde ~  and dot . := analogue of lambda function 
+
+
+acme_spend_21_22_gfb
+
+# long format is better for visualization 
+acme_spend_21_22_gfb %>%
+  pivot_longer(cols=starts_with('spend_')) %>% # какие колонки кикнуть вниз, pivot into longer format 
+  ggplot(aes(x = source, y = value, fill = name)) + # name = default var name from longer
+  geom_bar(stat = "identity", position = position_dodge())
+```
+
+**d. Which retailer (DTC, Amazon or Walmart) accounted for the most revenue in October 2022?**
+
+```{r}
+acme_revenue %>%
+  filter(format(date, '%m-%Y') == '10-2022') %>% 
+  # sum the values in all columns that start w 'revenue_'
+  summarise_at(vars(starts_with('revenue_')), ~sum(.x, na.rm=T)) %>% 
+  pivot_longer(cols = everything()) %>% 
+  mutate(name = gsub('revenue_', '', name)) %>%  #print nice names
+  arrange(-value) # sort in descending order
+
+
+# or just print the name
+acme_revenue %>%
+  filter(format(date, '%m-%Y') == '10-2022') %>%
+  summarise_at(vars(starts_with('revenue_')), ~sum(.x, na.rm=T)) %>% 
+  which.max() %>% names()
+```
+
+
+**e. In terms of total revenue, are there any anomalous days?**
+
+```{r}
+acme_revenue_total <- acme_revenue %>% 
+  mutate(total_revenue = rowSums(.[2:4], na.rm = TRUE)) # calculate total revenue
+
+# keep only total revenues and dates
+acme_revenue_total <- acme_revenue_total[, c("date", "total_revenue")] 
+
+# visualize time series
+ggplot(acme_revenue_total, 
+       aes(x = date, y = total_revenue, color=total_revenue)) + geom_line()
+
+# we can also compress the data range by taking a log 
+# to see the patterns and outliers more clearly:
+ggplot(acme_revenue_total, 
+       aes(x = date, y = log(total_revenue), 
+           color=log(total_revenue))) + geom_line() 
+```
+
+
+**f. In which month of the year does Acme tend make the most revenue?**
+
+```{r}
+# first, create month and year variables
+library(lubridate)
+acme_revenue_total <- acme_revenue_total %>% 
+  mutate(month = month(date),
+         year = year(date))
+
+ggplot(acme_revenue_total, aes(x = month, y = total_revenue)) +
+      geom_bar(stat = "identity", fill = "darkorchid4") +
+  facet_wrap(~ year) 
+
+ggplot(acme_revenue_total, aes(x = month, y = total_revenue)) +
+      geom_bar(stat = "identity", fill = "darkorchid4") +
+  facet_grid(year ~ .) 
+
+
+library(scales)
+
+ggplot(acme_revenue_total) +
+      geom_bar(aes(x = factor(paste0(month), levels = paste0(1:12)), 
+                   y = total_revenue, group=year, fill = paste0(year)), 
+               stat = "identity",
+               position = position_dodge()) +
+  # customize the appeerance of the plot
+  scale_fill_manual(values=c('lightblue', 'dodgerblue', 'navy')) +
+  # extract the first three letters of the month names for x labels
+  scale_x_discrete(labels = substr(month.name, 1, 3)) + 
+  scale_y_continuous(expand = expansion(add = c(0, 50000)), # add space above the data
+                     labels = comma_format(big.mark = ".",
+                                           decimal.mark = ",")) +
+  labs(y = 'Total revenue', fill = 'Year', x = 'Month')
+```
+
+Print revenues for each month in a descending order. 
+
+```{r}
+acme_revenue %>%
+  mutate(m_y = format(date, '%B, %Y')) %>%
+  group_by(m_y) %>%
+  summarise(total_revenue = sum(revenue_dtc + revenue_amazon + revenue_walmart, na.rm = T)) %>%
+  arrange(-total_revenue)
+```
+
+**g. Does Acme's marketing spend tend to follow a similar pattern to revenue?**
+
+
+```{r}
+library(anomalize)
+
+acme_spend_total <- aggregate(acme_spend["spend"], by = acme_spend["date"], 
+                              FUN = sum, na.rm=TRUE, na.action=NULL)
+
+merged <- acme_spend_total %>%
+  full_join(., acme_revenue_total, by = 'date')
+
+# plot total spend and revenue over time 
+merged %>% ggplot() +
+  geom_line(aes(x = date, y = total_revenue)) +
+  geom_line(aes(x = date, y = spend), color = "red") +
+  labs(x = "Date", y = "Value")
+
+
+# create remainder datasets for revenue and spend
+e_revenue <- acme_revenue_total %>% as_tibble() %>%
+  time_decompose(total_revenue, method = "stl", frequency = "auto", trend = "auto") %>%
+  anomalize(remainder, method = "gesd", alpha = 0.05, max_anoms = 0.2) %>% select(date, remainder)
+
+e_spend <- acme_spend_total %>% as_tibble() %>%
+  time_decompose(spend, method = "stl", frequency = "auto", trend = "auto") %>%
+  anomalize(remainder, method = "gesd", alpha = 0.05, max_anoms = 0.2) %>% select(date, remainder)
+```
+
+From the previous observations, it looks like the anomalies detected at the beginning of 2020 follow some previous trend from 2019 -- get rid of these dates as the outliers for the 2020-2022 time period. 
+
+```{r}
+# merge
+e_merged <- e_revenue %>%
+  filter(date > '2020-01-20') %>%
+  full_join(e_spend, by = 'date', 
+            # add suffixes to differentiate the column names:
+            suffix = c('.revenue', '.spend')) 
+
+merged <- merged %>% filter(date > '2020-01-20')
+```
+
+Fit linear regressions with year and month fixed effects and a set of lags for (1) the revenue and spend residual components of the time series data after the trend and seasonality have been removed and (2) original, non-decomposed data. This would allow to observe whether spend and revenue change concurrently. 
+
+```{r}
+# stat. significant positive effect of spend on revenue for the decomposed data
+summary(lm(remainder.revenue ~ remainder.spend, data = e_merged)) 
+
+# include lags (also stat significance): 
+summary(lm(remainder.revenue ~ lag(remainder.spend, 1), data = e_merged))
+summary(lm(remainder.revenue ~ lag(remainder.spend, 7), data = e_merged))
+
+summary(lm(remainder.revenue ~ lag(remainder.spend, 1) + 
+             lag(remainder.spend, 7) + lag(remainder.spend, 30), 
+           data = e_merged %>%
+             mutate(year = format(date, '%Y'))
+           ))
+
+# year effect
+summary(lm(remainder.revenue ~  lag(remainder.spend, 1) + 
+             lag(remainder.spend, 7) + lag(remainder.spend, 30) + year, 
+           data = e_merged %>%
+             mutate(year = format(date, '%Y'))
+           ))
+
+# year + month effects
+summary(lm(remainder.revenue ~ lag(remainder.spend, 1) + 
+             lag(remainder.spend, 7) + lag(remainder.spend, 30) + year + month, 
+           data = e_merged %>%
+             mutate(year = format(date, '%Y'),
+                    month = format(date, '%m'))
+           ))
+
+
+# decomposed data
+# baseline := fixed effects + lags for one day, one week, then lags varies from a model to model
+best_lag <- lapply(
+  8:60,
+  function(x) lm(remainder.revenue ~ lag(remainder.spend, 1) + 
+             lag(remainder.spend, 7) + lag(remainder.spend, x) + year + month, 
+           data = e_merged %>%
+             mutate(year = format(date, '%Y'),
+                    month = format(date, '%m'))
+           )
+)
+
+# not decomposed
+best_lag2 <- lapply(
+  8:60,
+  function(x) lm(total_revenue ~ lag(spend, 1) + 
+             lag(spend, 7) + lag(spend, x) + year + month, 
+           data = merged %>%
+             mutate(year = format(date, '%Y'),
+                    month = format(date, '%m'))
+           )
+)
+
+```
+
+Merge the lm residuals into a dataframe, and plot the estimated coefficients for the lags, visualizing 95% confidence intervals. 
+
+```{r}
+library(sandwich)
+
+rbind(
+  data.frame(
+  lag = 8:60,
+  beta = sapply(best_lag, coef)[4,], # estimated coeffs for the lags
+  se = unlist(lapply(best_lag, function(y) sqrt(diag(vcovHC(y, type = 'HC3')))[['lag(remainder.spend, x)']]
+       )),
+  model = 'Stationary'
+),
+data.frame(
+  lag = 8:60,
+  beta = sapply(best_lag2, coef)[4,],
+  se = unlist(lapply(best_lag2, function(y) sqrt(diag(vcovHC(y, type = 'HC3')))[[4]]
+       )),
+  model = 'Non-Stationary'
+)
+) %>%
+  ggplot() +
+  geom_point(aes(x = lag, y = beta, color = model), 
+             position = position_dodge(width=0.9)) +
+  geom_errorbar(aes(x = lag, ymin = beta - se*qnorm(0.975),
+                    ymax = beta + se*qnorm(0.975), color = model), width = 0,
+                position = position_dodge(width=0.9)) +
+  geom_hline(yintercept = 0, linetype = 'dashed')
+ 
+```
+
+We see that spend and revenue are severely correlated across all lags when we do not account for seasonality and trends in the time series data. However, the stationary model (fit on decomposed time series) indicates that spend has a significant effect on revenue that is lagged for a week, month, or two months (lags = 7, 30, 60). 
+
+========
+
+First, I used decomposition residuals to compare stationary processes and get rid of confounders like local trends and seasonality. I also present the models fit on raw, non-decomposed data to demonstrate that the results in the model with confounding variables are biased and overestimate the effectiveness of the intervention. 
+
+Second, I also added year and month fixed effects to make a correction for specific time characteristics and analyze within-year, within-month variation. 
+
+Third, I added two lags to each model (one day and one week) to control for autocorrelation so that there is no possibility that the intervention becomes more effective in a day or a week. 
+
+Fourth, I tried to figure out when the intervention becomes effective (e.g. to calculate return on investment). For that purpose, I fit a lot of models, where the baseline model includes fixed effects and lags on one day and one week but the last independent variable varies for other models, it's a lag on 8 or 9 or ... 60 days. The goal is not to include all lags but to understand when does the model start working. Hence, each point on the plot is a regression coefficient for this varying lag from different models. 
+
+We should also do Bonferroni correction since it is a multiple hypotheses testing situation. Usually we need to divide the threshold p-value by the number of tests, .05/52 in my case. But since we are working with confidence intervals, then the Bonferroni correction for 52 tests at 95% confidence interval would be analogous to building an interval at the 1-0.05/52 confidence level, so we need to replace `qnorm(0.975)` to `qnorm(1 - (.05/52)/2)`. 
+
+We can also estimate SARIMAX. Or fit a first difference model (get a derivative from both variables) to get rid of trends and analyze data changes only. 
